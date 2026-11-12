@@ -1,3 +1,4 @@
+from functools import wraps
 import os
 import asyncio
 import logging
@@ -14,8 +15,7 @@ bot = commands.Bot(intents=intents,command_prefix="md!")
 channels = {}
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s:%(levelname)s:%(name)s: %(message)s"
+    level=logging.INFO
 )
 
 @bot.event
@@ -35,8 +35,23 @@ async def on_voice_state_update(member, before, after):
             await before.channel.delete()
             del channels[before.channel.id]
 
+vc_group = discord.app_commands.Group(name="vc", description="Manage temporary Voice Channels")
 
-@bot.tree.command(name="create", description="Creates a temporary Voice Channel")
+def require_owner(func):
+    @wraps(func)
+    async def wrapper(interaction, *args, **kwargs):
+        if interaction.channel.id not in channels.keys():
+            await interaction.response.send_message(messages.ERROR_NOT_MANAGED)
+            return
+
+        if channels[interaction.channel.id]["owner"] != interaction.user.id:
+            await interaction.response.send_message(messages.ERROR_NOT_OWNER)
+            return
+
+        return await func(interaction, *args, **kwargs)
+    return wrapper
+
+@vc_group.command(name="create", description="Creates a temporary Voice Channel")
 async def create_vc(interaction):
     new_channel = await interaction.guild.create_voice_channel(f"{interaction.user.display_name}'s VC Channel")
 
@@ -56,29 +71,21 @@ async def create_vc(interaction):
     embed = discord.Embed(title="I have created your Voice Channel.", description=f"{new_channel.mention}", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="rename", description="Renames your current Voice Channel")
+@vc_group.command(name="open", description="Opens your current Voice Channel to the entire server")
+@require_owner
+async def open_channel(interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, view_channel=True)
+    await interaction.response.send_message("I have opened your Voice Channel to the server.")
+
+@vc_group.command(name="rename", description="Renames your current Voice Channel")
+@require_owner
 async def rename_channel(interaction, new_name: str):
-    if interaction.channel.id not in channels.keys():
-        await interaction.response.send_message(messages.ERROR_NOT_MANAGED)
-        return
-
-    if channels[interaction.channel.id]["owner"] != interaction.user.id:
-        await interaction.response.send_message(messages.ERROR_NOT_OWNER)
-        return
-
     await interaction.channel.edit(name=new_name)
     await interaction.response.send_message("I have renamed your Voice Channel.")
 
-@bot.tree.command(name="invite", description="Invites a user to your current Voice Channel")
+@vc_group.command(name="invite", description="Invites a user to your current Voice Channel")
+@require_owner
 async def invite_user(interaction, user: discord.User):
-    if interaction.channel.id not in channels.keys():
-        await interaction.response.send_message(messages.ERROR_NOT_MANAGED)
-        return
-
-    if channels[interaction.channel.id]["owner"] != interaction.user.id:
-        await interaction.response.send_message(messages.ERROR_NOT_OWNER)
-        return
-
     await interaction.channel.set_permissions(user, view_channel=True)
 
     invitation_embed = discord.Embed(title=f"{interaction.user.display_name} has requested that you join their Voice Channel.", description=f"I have delivered this invitation to join {interaction.channel.mention} in \"{interaction.guild.name}\"", color=discord.Color.blue())
@@ -89,6 +96,15 @@ async def invite_user(interaction, user: discord.User):
         await interaction.channel.send(f"{user.mention}, {interaction.user.display_name} has requested that you join this Voice Channel.")
 
     await interaction.response.send_message(f"I have delivered your invitation to {user.display_name}.")
+
+@vc_group.command(name="kick", description="Blocks someone from accessing your current Voice Channel.")
+@require_owner
+async def kick_user(interaction, user: discord.Member):
+    await interaction.channel.set_permissions(user, view_channel=False)
+    await user.move_to(None)
+    await interaction.response.send_message(f"I have removed {user.display_name} from your Voice Channel.")
+
+bot.tree.add_command(vc_group)
 
 async def start():
     async with bot:
